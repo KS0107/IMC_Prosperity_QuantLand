@@ -67,7 +67,7 @@ if __name__ == "__main__":
     
     print("Best conversion path:")
     print(" -> ".join(best_path))
-    print(f"\nFinal amount: {best_final:.2f} SeaShells (Percentage gain: {percentage_gain:.2f}%)\n")
+    print(f"\nFinal amount: {best_final:.2f} SeaShells (Percentage gain: {percentage_gain}%)\n")
     
     print("Conversion details per step:")
     for i, step in enumerate(best_details, start=1):
