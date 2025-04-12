@@ -13,9 +13,10 @@ class Product:
     PICNIC_BASKET2 = "PICNIC_BASKET2"
     JAMS = "JAMS"
     CROISSANTS = "CROISSANTS"
-    DJEMBE = "DJEMBE"
+    DJEMBES = "DJEMBES"
     SYNTHETIC = "SYNTHETIC"
-    SPREAD = "SPREAD"
+    SPREAD1 = "SPREAD1"
+    SPREAD2 = "SPREAD2"
 
 
 PARAMS = {
@@ -33,30 +34,28 @@ PARAMS = {
         "reversion_beta": -0.229,
         "kelp_min_edge": 2,
     },
-    Product.SPREAD: {
-        "default_spread_mean": 379.50439988484239,  # Adjust for PICNIC_BASKET1 if needed
-        "default_spread_std": 76.07966,
+    Product.SPREAD1: {
+        "default_spread_mean": 26.60,  # Adjust for PICNIC_BASKET1 if needed
+        "default_spread_std": 27.05,
         "spread_std_window": 45,
-        "zscore_threshold": 7,
+        "zscore_threshold": 3,
         "target_position": 58,
     },
     # NEW: Parameters for PICNIC_BASKET2 spread
-    Product.PICNIC_BASKET2: {
-        "default_spread_mean": 0,  # Estimate from data or set dynamically
-        "default_spread_std": 50,  # Adjust based on observed volatility
+    Product.SPREAD2: {
+        "default_spread_mean": 105.38,  # Estimate from data or set dynamically
+        "default_spread_std": 27.12,  # Adjust based on observed volatility
         "spread_std_window": 45,
-        "zscore_threshold": 7,
-        "target_position": 80,  # Smaller than limit (100), adjust as needed
+        "zscore_threshold": 3,
+        "target_position": 70,  # Smaller than limit (100), adjust as needed
     },
 }
 
-
-# NEW: Define weights for both baskets
 BASKET_WEIGHTS = {
     Product.PICNIC_BASKET1: {
-        Product.JAMS: 3,       # Corrected from 4 to 3
+        Product.JAMS: 3,       
         Product.CROISSANTS: 6,
-        Product.DJEMBE: 1,
+        Product.DJEMBES: 1,
     },
     Product.PICNIC_BASKET2: {
         Product.JAMS: 2,
@@ -78,14 +77,339 @@ class Trader:
             Product.PICNIC_BASKET2: 100,
             Product.JAMS: 350,
             Product.CROISSANTS: 250,
-            Product.DJEMBE: 60,
+            Product.DJEMBES: 60,
         }
 
-    # [Unchanged methods: take_best_orders, take_best_orders_with_adverse, market_make, 
-    # clear_position_order, kelp_fair_value, make_resin_orders, take_orders, 
-    # clear_orders, make_kelp_orders, orchids_implied_bid_ask, orchids_arb_take, 
-    # orchids_arb_clear, orchids_arb_make]
-    # Skipping these for brevity; assume they remain as provided
+    # Returns buy_order_volume, sell_order_volume
+    def take_best_orders(
+        self,
+        product: str,
+        fair_value: int,
+        take_width: float,
+        orders: List[Order],
+        order_depth: OrderDepth,
+        position: int,
+        buy_order_volume: int,
+        sell_order_volume: int,
+        prevent_adverse: bool = False,
+        adverse_volume: int = 0,
+    ) -> (int, int):
+        position_limit = self.LIMIT[product]
+        if len(order_depth.sell_orders) != 0:
+            best_ask = min(order_depth.sell_orders.keys())
+            best_ask_amount = -1 * order_depth.sell_orders[best_ask]
+
+            if best_ask <= fair_value - take_width:
+                quantity = min(
+                    best_ask_amount, position_limit - position
+                )  # max amt to buy
+                if quantity > 0:
+                    orders.append(Order(product, best_ask, quantity))
+                    buy_order_volume += quantity
+                    order_depth.sell_orders[best_ask] += quantity
+                    if order_depth.sell_orders[best_ask] == 0:
+                        del order_depth.sell_orders[best_ask]
+
+        if len(order_depth.buy_orders) != 0:
+            best_bid = max(order_depth.buy_orders.keys())
+            best_bid_amount = order_depth.buy_orders[best_bid]
+            if best_bid >= fair_value + take_width:
+                quantity = min(
+                    best_bid_amount, position_limit + position
+                )  # should be the max we can sell
+                if quantity > 0:
+                    orders.append(Order(product, best_bid, -1 * quantity))
+                    sell_order_volume += quantity
+                    order_depth.buy_orders[best_bid] -= quantity
+                    if order_depth.buy_orders[best_bid] == 0:
+                        del order_depth.buy_orders[best_bid]
+        return buy_order_volume, sell_order_volume
+
+    def take_best_orders_with_adverse(
+        self,
+        product: str,
+        fair_value: int,
+        take_width: float,
+        orders: List[Order],
+        order_depth: OrderDepth,
+        position: int,
+        buy_order_volume: int,
+        sell_order_volume: int,
+        adverse_volume: int,
+    ) -> (int, int):
+
+        position_limit = self.LIMIT[product]
+        if len(order_depth.sell_orders) != 0:
+            best_ask = min(order_depth.sell_orders.keys())
+            best_ask_amount = -1 * order_depth.sell_orders[best_ask]
+            if abs(best_ask_amount) <= adverse_volume:
+                if best_ask <= fair_value - take_width:
+                    quantity = min(
+                        best_ask_amount, position_limit - position
+                    )  # max amt to buy
+                    if quantity > 0:
+                        orders.append(Order(product, best_ask, quantity))
+                        buy_order_volume += quantity
+                        order_depth.sell_orders[best_ask] += quantity
+                        if order_depth.sell_orders[best_ask] == 0:
+                            del order_depth.sell_orders[best_ask]
+
+        if len(order_depth.buy_orders) != 0:
+            best_bid = max(order_depth.buy_orders.keys())
+            best_bid_amount = order_depth.buy_orders[best_bid]
+            if abs(best_bid_amount) <= adverse_volume:
+                if best_bid >= fair_value + take_width:
+                    quantity = min(
+                        best_bid_amount, position_limit + position
+                    )  # should be the max we can sell
+                    if quantity > 0:
+                        orders.append(Order(product, best_bid, -1 * quantity))
+                        sell_order_volume += quantity
+                        order_depth.buy_orders[best_bid] -= quantity
+                        if order_depth.buy_orders[best_bid] == 0:
+                            del order_depth.buy_orders[best_bid]
+
+        return buy_order_volume, sell_order_volume
+
+    def market_make(
+        self,
+        product: str,
+        orders: List[Order],
+        bid: int,
+        ask: int,
+        position: int,
+        buy_order_volume: int,
+        sell_order_volume: int,
+    ) -> (int, int):
+        buy_quantity = self.LIMIT[product] - (position + buy_order_volume)
+        if buy_quantity > 0:
+            orders.append(Order(product, round(bid), buy_quantity))  # Buy order
+
+        sell_quantity = self.LIMIT[product] + (position - sell_order_volume)
+        if sell_quantity > 0:
+            orders.append(Order(product, round(ask), -sell_quantity))  # Sell order
+        return buy_order_volume, sell_order_volume
+
+    def clear_position_order(
+        self,
+        product: str,
+        fair_value: float,
+        width: int,
+        orders: List[Order],
+        order_depth: OrderDepth,
+        position: int,
+        buy_order_volume: int,
+        sell_order_volume: int,
+    ) -> List[Order]:
+        position_after_take = position + buy_order_volume - sell_order_volume
+        fair_for_bid = round(fair_value - width)
+        fair_for_ask = round(fair_value + width)
+
+        buy_quantity = self.LIMIT[product] - (position + buy_order_volume)
+        sell_quantity = self.LIMIT[product] + (position - sell_order_volume)
+
+        if position_after_take > 0:
+            # Aggregate volume from all buy orders with price greater than fair_for_ask
+            clear_quantity = sum(
+                volume
+                for price, volume in order_depth.buy_orders.items()
+                if price >= fair_for_ask
+            )
+            clear_quantity = min(clear_quantity, position_after_take)
+            sent_quantity = min(sell_quantity, clear_quantity)
+            if sent_quantity > 0:
+                orders.append(Order(product, fair_for_ask, -abs(sent_quantity)))
+                sell_order_volume += abs(sent_quantity)
+
+        if position_after_take < 0:
+            # Aggregate volume from all sell orders with price lower than fair_for_bid
+            clear_quantity = sum(
+                abs(volume)
+                for price, volume in order_depth.sell_orders.items()
+                if price <= fair_for_bid
+            )
+            clear_quantity = min(clear_quantity, abs(position_after_take))
+            sent_quantity = min(buy_quantity, clear_quantity)
+            if sent_quantity > 0:
+                orders.append(Order(product, fair_for_bid, abs(sent_quantity)))
+                buy_order_volume += abs(sent_quantity)
+
+        return buy_order_volume, sell_order_volume
+
+    def kelp_fair_value(self, order_depth: OrderDepth, traderObject) -> float:
+        if len(order_depth.sell_orders) != 0 and len(order_depth.buy_orders) != 0:
+            best_ask = min(order_depth.sell_orders.keys())
+            best_bid = max(order_depth.buy_orders.keys())
+            filtered_ask = [
+                price
+                for price in order_depth.sell_orders.keys()
+                if abs(order_depth.sell_orders[price])
+                >= self.params[Product.KELP]["adverse_volume"]
+            ]
+            filtered_bid = [
+                price
+                for price in order_depth.buy_orders.keys()
+                if abs(order_depth.buy_orders[price])
+                >= self.params[Product.KELP]["adverse_volume"]
+            ]
+            mm_ask = min(filtered_ask) if len(filtered_ask) > 0 else None
+            mm_bid = max(filtered_bid) if len(filtered_bid) > 0 else None
+            if mm_ask == None or mm_bid == None:
+                if traderObject.get("kelp_last_price", None) == None:
+                    mmmid_price = (best_ask + best_bid) / 2
+                else:
+                    mmmid_price = traderObject["kelp_last_price"]
+            else:
+                mmmid_price = (mm_ask + mm_bid) / 2
+
+            if traderObject.get("kelp_last_price", None) != None:
+                last_price = traderObject["kelp_last_price"]
+                last_returns = (mmmid_price - last_price) / last_price
+                pred_returns = (
+                    last_returns * self.params[Product.KELP]["reversion_beta"]
+                )
+                fair = mmmid_price + (mmmid_price * pred_returns)
+            else:
+                fair = mmmid_price
+            traderObject["kelp_last_price"] = mmmid_price
+            return fair
+        return None
+
+    def make_resin_orders(
+        self,
+        order_depth: OrderDepth,
+        fair_value: int,
+        position: int,
+        buy_order_volume: int,
+        sell_order_volume: int,
+        volume_limit: int,
+    ) -> (List[Order], int, int):
+        orders: List[Order] = []
+        baaf = min(
+            [
+                price
+                for price in order_depth.sell_orders.keys()
+                if price > fair_value + 1
+            ]
+        )
+        bbbf = max(
+            [price for price in order_depth.buy_orders.keys() if price < fair_value - 1]
+        )
+
+        if baaf <= fair_value + 2:
+            if position <= volume_limit:
+                baaf = fair_value + 3  # still want edge 2 if position is not a concern
+
+        if bbbf >= fair_value - 2:
+            if position >= -volume_limit:
+                bbbf = fair_value - 3  # still want edge 2 if position is not a concern
+
+        buy_order_volume, sell_order_volume = self.market_make(
+            Product.RAINFOREST_RESIN,
+            orders,
+            bbbf + 1,
+            baaf - 1,
+            position,
+            buy_order_volume,
+            sell_order_volume,
+        )
+        return orders, buy_order_volume, sell_order_volume
+
+    def take_orders(
+        self,
+        product: str,
+        order_depth: OrderDepth,
+        fair_value: float,
+        take_width: float,
+        position: int,
+        prevent_adverse: bool = False,
+        adverse_volume: int = 0,
+    ) -> (List[Order], int, int):
+        orders: List[Order] = []
+        buy_order_volume = 0
+        sell_order_volume = 0
+
+        if prevent_adverse:
+            buy_order_volume, sell_order_volume = self.take_best_orders_with_adverse(
+                product,
+                fair_value,
+                take_width,
+                orders,
+                order_depth,
+                position,
+                buy_order_volume,
+                sell_order_volume,
+                adverse_volume,
+            )
+        else:
+            buy_order_volume, sell_order_volume = self.take_best_orders(
+                product,
+                fair_value,
+                take_width,
+                orders,
+                order_depth,
+                position,
+                buy_order_volume,
+                sell_order_volume,
+            )
+        return orders, buy_order_volume, sell_order_volume
+
+    def clear_orders(
+        self,
+        product: str,
+        order_depth: OrderDepth,
+        fair_value: float,
+        clear_width: int,
+        position: int,
+        buy_order_volume: int,
+        sell_order_volume: int,
+    ) -> (List[Order], int, int):
+        orders: List[Order] = []
+        buy_order_volume, sell_order_volume = self.clear_position_order(
+            product,
+            fair_value,
+            clear_width,
+            orders,
+            order_depth,
+            position,
+            buy_order_volume,
+            sell_order_volume,
+        )
+        return orders, buy_order_volume, sell_order_volume
+
+    def make_kelp_orders(
+        self,
+        order_depth: OrderDepth,
+        fair_value: float,
+        min_edge: float,
+        position: int,
+        buy_order_volume: int,
+        sell_order_volume: int,
+    ) -> (List[Order], int, int):
+        orders: List[Order] = []
+        aaf = [
+            price
+            for price in order_depth.sell_orders.keys()
+            if price >= round(fair_value + min_edge)
+        ]
+        bbf = [
+            price
+            for price in order_depth.buy_orders.keys()
+            if price <= round(fair_value - min_edge)
+        ]
+        baaf = min(aaf) if len(aaf) > 0 else round(fair_value + min_edge)
+        bbbf = max(bbf) if len(bbf) > 0 else round(fair_value - min_edge)
+        buy_order_volume, sell_order_volume = self.market_make(
+            Product.KELP,
+            orders,
+            bbbf + 1,
+            baaf - 1,
+            position,
+            buy_order_volume,
+            sell_order_volume,
+        )
+
+        return orders, buy_order_volume, sell_order_volume
 
     def get_swmid(self, order_depth) -> float:
         if not order_depth.buy_orders or not order_depth.sell_orders:
@@ -105,6 +429,12 @@ class Trader:
         weights = BASKET_WEIGHTS[basket_product]
         components = weights.keys()
 
+        # Check if all components are present in order_depths
+        missing_components = [comp for comp in components if comp not in order_depths]
+        if missing_components:
+            print(f"Missing components for {basket_product}: {missing_components}")
+            return OrderDepth()
+
         # Initialize synthetic order depth
         synthetic_order_price = OrderDepth()
 
@@ -122,6 +452,10 @@ class Trader:
                 if order_depths[component].sell_orders
                 else float("inf")
             )
+            if not order_depths[component].buy_orders:
+                print(f"No buy orders for {component} in {basket_product}")
+            if not order_depths[component].sell_orders:
+                print(f"No sell orders for {component} in {basket_product}")
 
         # Calculate implied bid and ask for synthetic basket
         implied_bid = sum(
@@ -153,17 +487,35 @@ class Trader:
     def convert_synthetic_basket_orders(
         self, synthetic_orders: List[Order], order_depths: Dict[str, OrderDepth], basket_product: str
     ) -> Dict[str, List[Order]]:
-        component_orders = {comp: [] for comp in BASKET_WEIGHTS[basket_product].keys()}
-        synthetic_basket_order_depth = self.get_synthetic_basket_order_depth(order_depths, basket_product)
+           
+        weights = BASKET_WEIGHTS[basket_product]
+        components = weights.keys()
+
+        component_orders = {comp: [] for comp in components}
+
+        # Early return if no synthetic orders
+        if not synthetic_orders:
+            return component_orders
+
+        # Check if all components have order depths
+        missing_components = [comp for comp in components if comp not in order_depths]
+        if missing_components:
+            print(f"Missing components in convert_synthetic for {basket_product}: {missing_components}")
+            return component_orders
+
+        synthetic_order_depth = self.get_synthetic_basket_order_depth(order_depths, basket_product)
+        if not synthetic_order_depth.buy_orders and not synthetic_order_depth.sell_orders:
+            print(f"No valid synthetic order depth for {basket_product}")
+            return component_orders
         
         best_bid = (
-            max(synthetic_basket_order_depth.buy_orders.keys())
-            if synthetic_basket_order_depth.buy_orders
+            max(synthetic_order_depth.buy_orders.keys())
+            if synthetic_order_depth.buy_orders
             else 0
         )
         best_ask = (
-            min(synthetic_basket_order_depth.sell_orders.keys())
-            if synthetic_basket_order_depth.sell_orders
+            min(synthetic_order_depth.sell_orders.keys())
+            if synthetic_order_depth.sell_orders
             else float("inf")
         )
 
@@ -199,18 +551,33 @@ class Trader:
         if target_position == basket_position:
             return None
 
+        if basket_product not in order_depths:
+            print(f"No order depth for {basket_product}")
+            return None
+
         target_quantity = abs(target_position - basket_position)
         basket_order_depth = order_depths[basket_product]
         synthetic_order_depth = self.get_synthetic_basket_order_depth(order_depths, basket_product)
 
+        if not synthetic_order_depth.buy_orders and not synthetic_order_depth.sell_orders:
+            print(f"No valid synthetic order depth for {basket_product} in execute_spread_orders")
+            return None
+
         if target_position > basket_position:
+            if not basket_order_depth.sell_orders or not synthetic_order_depth.buy_orders:
+                print(f"Missing sell orders for {basket_product} or buy orders for synthetic")
+                return None
+
             basket_ask_price = min(basket_order_depth.sell_orders.keys())
             basket_ask_volume = abs(basket_order_depth.sell_orders[basket_ask_price])
-            synthetic_bid_price = max(synthetic_basket_order_depth.buy_orders.keys())
-            synthetic_bid_volume = abs(synthetic_basket_order_depth.buy_orders[synthetic_bid_price])
+            synthetic_bid_price = max(synthetic_order_depth.buy_orders.keys())
+            synthetic_bid_volume = abs(synthetic_order_depth.buy_orders[synthetic_bid_price])
 
             orderbook_volume = min(basket_ask_volume, synthetic_bid_volume)
             execute_volume = min(orderbook_volume, target_quantity)
+
+            if execute_volume == 0:
+                return None
 
             basket_orders = [Order(basket_product, basket_ask_price, execute_volume)]
             synthetic_orders = [Order(Product.SYNTHETIC, synthetic_bid_price, -execute_volume)]
@@ -222,13 +589,20 @@ class Trader:
             return aggregate_orders
 
         else:
+            if not basket_order_depth.buy_orders or not synthetic_order_depth.sell_orders:
+                print(f"Missing buy orders for {basket_product} or sell orders for synthetic")
+                return None
+
             basket_bid_price = max(basket_order_depth.buy_orders.keys())
             basket_bid_volume = abs(basket_order_depth.buy_orders[basket_bid_price])
-            synthetic_ask_price = min(synthetic_basket_order_depth.sell_orders.keys())
-            synthetic_ask_volume = abs(synthetic_basket_order_depth.sell_orders[synthetic_ask_price])
+            synthetic_ask_price = min(synthetic_order_depth.sell_orders.keys())
+            synthetic_ask_volume = abs(synthetic_order_depth.sell_orders[synthetic_ask_price])
 
             orderbook_volume = min(basket_bid_volume, synthetic_ask_volume)
             execute_volume = min(orderbook_volume, target_quantity)
+
+            if execute_volume == 0:
+                return None
 
             basket_orders = [Order(basket_product, basket_bid_price, -execute_volume)]
             synthetic_orders = [Order(Product.SYNTHETIC, synthetic_ask_price, execute_volume)]
@@ -250,10 +624,17 @@ class Trader:
         if basket_product not in order_depths:
             return None
 
+        # Check if all components are present
+        weights = BASKET_WEIGHTS[basket_product]
+        missing_components = [comp for comp in weights.keys() if comp not in order_depths]
+        if missing_components:
+            print(f"Missing components for {basket_product} in spread_orders: {missing_components}")
+            return None
+
         basket_order_depth = order_depths[basket_product]
         synthetic_order_depth = self.get_synthetic_basket_order_depth(order_depths, basket_product)
         basket_swmid = self.get_swmid(basket_order_depth)
-        synthetic_swmid = self.get_swmid(synthetic_order_depth)
+        synthetic_swmid = self.get_swmid(synthetic_order_depth) 
         spread = basket_swmid - synthetic_swmid
         spread_data["spread_history"].append(spread)
 
@@ -263,6 +644,11 @@ class Trader:
             spread_data["spread_history"].pop(0)
 
         spread_std = np.std(spread_data["spread_history"])
+        if spread_std == 0:
+            print(f"Zero spread std for {basket_product}")
+            return None
+        
+        
         zscore = (spread - spread_params["default_spread_mean"]) / spread_std
 
         if zscore >= spread_params["zscore_threshold"]:
@@ -288,15 +674,15 @@ class Trader:
         conversions = 0
 
         # Initialize traderObject for spreads
-        if Product.SPREAD not in traderObject:
-            traderObject[Product.SPREAD] = {
+        if Product.SPREAD1 not in traderObject:
+            traderObject[Product.SPREAD1] = {
                 "spread_history": [],
                 "prev_zscore": 0,
                 "clear_flag": False,
                 "curr_avg": 0,
             }
-        if Product.PICNIC_BASKET2 not in traderObject:
-            traderObject[Product.PICNIC_BASKET2] = {
+        if Product.SPREAD2 not in traderObject:
+            traderObject[Product.SPREAD2] = {
                 "spread_history": [],
                 "prev_zscore": 0,
                 "clear_flag": False,
@@ -370,8 +756,8 @@ class Trader:
             state.order_depths,
             Product.PICNIC_BASKET1,
             basket1_position,
-            traderObject[Product.SPREAD],
-            self.params[Product.SPREAD],
+            traderObject[Product.SPREAD1],
+            self.params[Product.SPREAD1],
         )
 
         basket2_position = state.position.get(Product.PICNIC_BASKET2, 0)
@@ -379,8 +765,8 @@ class Trader:
             state.order_depths,
             Product.PICNIC_BASKET2,
             basket2_position,
-            traderObject[Product.PICNIC_BASKET2],
-            self.params[Product.PICNIC_BASKET2],
+            traderObject[Product.SPREAD2],
+            self.params[Product.SPREAD2],
         )
 
         # Combine orders, checking position limits
@@ -389,7 +775,7 @@ class Trader:
             Product.PICNIC_BASKET2,
             Product.JAMS,
             Product.CROISSANTS,
-            Product.DJEMBE,
+            Product.DJEMBES,
         ]:
             result[product] = []
             total_quantity = state.position.get(product, 0)
